@@ -1,0 +1,11 @@
+{
+	"resolution": [1000, 1000],
+	"create_dataset": false,
+	"use_ML": true,
+	"visualize_dataset": false,
+	"simulation_speed": 1,
+	"benchmark_duration": false,
+	"dataset_path": "dataset/size_3x3_noise-5e-3_high-mass/",
+	"model_path": "model/size_3x3_channels-16_noise-5e-3_high-mass.pth",
+	"compile_model": false
+}

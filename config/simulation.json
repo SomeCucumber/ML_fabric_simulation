@@ -1,0 +1,14 @@
+{
+	"N_x": 3,
+	"N_y": 3,
+	"dt": 5e-4,
+	"dampening_coefficient": 5,
+	"k_structural": 50,
+	"k_shear": 25,
+	"k_bend": 5,
+	"g": 9.82,
+	"mass": 3e-0,
+	"initialization_noise_std": 1e-1,
+	"simulation_noise_std": 5e-3,
+	"fastened_particles": "roof"
+}

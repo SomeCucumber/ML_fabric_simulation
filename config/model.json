@@ -1,0 +1,8 @@
+{
+	"//comment": "network_args -> channels with format [input_channels, output_channels, [hidden_channels_1, hidden_channels_2, ...]], hidden channels are optional",
+	"network": "CNN",
+	"network_args": [6, 3, [16]],
+	"learning_rate": 0.001,
+	"batch_size": 512,
+	"max_epochs": 200
+}
