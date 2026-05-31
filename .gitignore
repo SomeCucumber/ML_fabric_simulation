@@ -1,0 +1,9 @@
+# Specify filepatterns you want git to ignore.
+dataset/
+lightning_logs/
+*.png
+*.jpg
+*.xml
+*.npy
+*epoch*
+*chunk*

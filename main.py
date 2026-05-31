@@ -18,21 +18,27 @@ with open("config/settings.json") as f:
 
 resolution = settings["resolution"]
 simulation_speed = settings["simulation_speed"]
-benchmark_duration = settings["benchmark_duration"]
+benchmark_start_stop = settings["benchmark_start_stop"]
+headless = settings["headless"]
 # ======================
 
 # Initialize simulation:
 sim = Simulation()
 x_scale, y_scale, x_offset, y_offset = sim.get_transform()
 
-main(
-	sim,
-	shader_loader=load_shader,
-	shader_name="fabric",
-	mesh=FabricMesh,
-	window_res=resolution,
-	simulation_speed=simulation_speed,
-	benchmark_duration=benchmark_duration,
-	transform=(x_scale, y_scale, x_offset, y_offset),
-	window_name="Fabric Simulation"
-	)
+if headless:
+	while True:
+		sim.step()
+
+else:
+	main(
+		sim,
+		shader_loader=load_shader,
+		shader_name="fabric",
+		mesh=FabricMesh,
+		window_res=resolution,
+		simulation_speed=simulation_speed,
+		benchmark_start_stop=benchmark_start_stop,
+		transform=(x_scale, y_scale, x_offset, y_offset),
+		window_name="Fabric Simulation"
+		)

@@ -6,6 +6,11 @@ import os
 import json
 from integrator import VisualizeDataset, Euler, MachineLearning
 
+try:
+	from iterator_print import percentage_print
+except ModuleNotFoundError:
+	percentage_print = None
+
 class Simulation:
 	def __init__(self):
 		# ===== PARAMETERS =====
@@ -27,8 +32,14 @@ class Simulation:
 		self.create_dataset = settings["create_dataset"]
 		use_ML = settings["use_ML"]
 		visualize_dataset = settings["visualize_dataset"]
-		dataset_path = settings["dataset_path"]
+		dataset_path = settings["dataset_path"][0]
+		self.chunk_size = settings["chunk_size"]
+		self.number_of_steps = settings["number_of_steps"]
+		self.save_interval = settings["save_interval"]
 		# ======================
+
+		self.step_counter = 0
+		self.percentage_print = percentage_print
 
 		# Initialize fabric:
 		pos = self.init_body()
@@ -67,15 +78,14 @@ class Simulation:
 
 		# Initialize dataset saver:
 		if self.create_dataset:
-			self.pos_path = dataset_path + "pos"
-			self.vel_path = dataset_path + "vel"
-			self.forces_path = dataset_path + "forces"
+			self.dataset_path = dataset_path
 
 			self.force_list = []
 			self.pos_list = []
 			self.vel_list = []
 			
-			npy_list = [int(f.split(".")[0]) for f in os.listdir(self.forces_path)]
+			os.makedirs(self.dataset_path, exist_ok=True)
+			npy_list = [int(f.split(".")[0]) for f in os.listdir(self.dataset_path)]
 			self.set_nr = max(npy_list)+1 if npy_list else 0
 
 	def init_body(self):
@@ -95,11 +105,12 @@ class Simulation:
 		min_y = pos[1].min()
 		max_y = pos[1].max()
 
-		self.x_scale = 0.75/(max_x-min_x)
-		self.y_scale = 0.75/(max_y-min_y)
+		self.x_scale = 0.5/(max_x-min_x)
+		self.y_scale = 0.5/(max_y-min_y)
 
 		self.x_offset = -(min_x+max_x)/2*self.x_scale
 		self.y_offset = -(min_y+max_y)/2*self.y_scale
+		self.y_offset = 0.45
 
 		return self.x_scale, self.y_scale, self.x_offset, self.y_offset
 
@@ -129,47 +140,64 @@ class Simulation:
 		self.chosen_particle = False
 
 	def step(self):
-		if (self.chosen_particle is not False) and self.mouse_down:
-			self.engine.move_point(self.chosen_particle, self.mouse_pos)
+		if (not self.number_of_steps) or (self.step_counter < self.number_of_steps):
+			if (self.chosen_particle is not False) and self.mouse_down:
+				self.engine.move_point(self.chosen_particle, self.mouse_pos)
 
-		if self.create_dataset:
-			self.record_pos_vel()
+			if self.create_dataset:
+				if self.step_counter % self.save_interval == 0:
+					self.record_pos_vel()
 
-		self.engine.step()
+			if self.save_interval and self.create_dataset:
+				allow_manipulation = True if (self.step_counter % self.save_interval == 0) else False
+				self.engine.step(allow_manipulation=allow_manipulation)
+			else:
+				self.engine.step()
 
-		if self.create_dataset:
-			self.record_forces()
+			if self.create_dataset:
+				if self.step_counter % self.save_interval == 0:
+					self.record_forces()
+
+				if len(self.force_list) == self.chunk_size:
+					self.save_data()
+
+				self.step_counter += 1
+
+				if self.number_of_steps and self.percentage_print:
+					percentage_print(self.step_counter, self.number_of_steps+1, message="Steps completed")
 
 	@property
 	def pos(self):
 		return self.engine.get_pos()
 
+	# ===== DATASET CREATION =====
 	def record_pos_vel(self):
-		if not self.mouse_down:
-			self.pos_list.append(self.engine.get_pos())
-			self.vel_list.append(self.engine.get_vel())
-		elif len(self.force_list) > 0:
-			self.save_pos_vel()
-			self.pos_list = []
-			self.vel_list = []
+		"""
+		This function records all positions and velocities IF
+		mousebutton is not down, if mouse click is detected record
+		is saved to file, if record gets longer than chunk_size, it also
+		gets saved to file.
+		"""
+		self.pos_list.append(self.engine.get_pos())
+		self.vel_list.append(self.engine.get_vel())
 
 	def record_forces(self):
-		if not self.mouse_down:
-			self.force_list.append(self.engine.get_forces())
-		elif len(self.force_list) > 0:
-			self.save_forces()
-			self.force_list = []
-			self.set_nr += 1
+		"""
+		This function records all forces IF mousebutton is not down,
+		if mouse click is detected record is saved to file, if
+		record gets longer than chunk_size, it also gets saved to file.
+		"""
+		self.force_list.append(self.engine.get_forces())
 
-	def save_pos_vel(self):
-		np.save(f"{self.pos_path}/{self.set_nr}.npy", np.array(self.pos_list))
-		np.save(f"{self.vel_path}/{self.set_nr}.npy", np.array(self.vel_list))
-
-	def save_forces(self):
-		np.save(f"{self.forces_path}/{self.set_nr}.npy", np.array(self.force_list))
-
+	def save_data(self):
+		data_chunk = np.concatenate((np.array(self.pos_list), np.array(self.vel_list), np.array(self.force_list)), axis=1)
+		np.save(f"{self.dataset_path}/{self.set_nr}.npy", data_chunk)
+		self.pos_list = []
+		self.vel_list = []
+		self.force_list = []
+		print("\nSaved dataset")
+		self.set_nr += 1
+			
 	def end_sim(self):
 		if self.create_dataset:
-			self.save_pos_vel()
-			self.save_forces()
-			print("Saved dataset")
+			self.save_data()

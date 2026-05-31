@@ -7,6 +7,7 @@ import nn as my_models
 
 # Misc:
 import json
+from chunk_gen import ChunkGen
 
 class VisualizeDataset:
 	def __init__(self):
@@ -21,43 +22,34 @@ class VisualizeDataset:
 		with open("config/settings.json") as f:
 			settings = json.load(f)
 
-		dataset_path = settings["dataset_path"]
-		pos_path = dataset_path + "pos"
-		vel_path = dataset_path + "vel"
-		forces_path = dataset_path + "forces"
+		temp_path = settings["temp_path"]
 		# ======================
 
-		i = 0
-		self.positions = []
-		self.velocities = []
-		self.forces = []
-		while True:
-			try:
-				temp_pos = np.load(pos_path + f"/{i}.npy")
-				temp_vel = np.load(vel_path + f"/{i}.npy")
-				temp_forces = np.load(forces_path + f"/{i}.npy")
-				self.positions.append(temp_pos.copy())
-				self.velocities.append(temp_vel.copy())
-				self.forces.append(temp_forces.copy())
-				i += 1
-			except FileNotFoundError:
-				break
+		self.pos_vel_path = temp_path + "/pos_vel_"
 
-		self.positions = np.concatenate(self.positions, axis=0)
-		self.velocities = np.concatenate(self.velocities, axis=0)
-		self.forces = np.concatenate(self.forces, axis=0)
-
-		self.step_counter = 0
+		chunks = ChunkGen()
 
 		# First step:
-		self.pos = self.positions[0]
+		self.chunk_nr = 0
+		self.step_counter = 0
+		self.load_chunk()
+		self.pos = self.positions[self.step_counter]
+
+	def load_chunk(self):
+		try:
+			self.positions = np.load(self.pos_vel_path + f"{self.chunk_nr}.npy")[:, :3, :, :]
+			self.chunk_size = self.positions.shape[0]
+		except FileNotFoundError:
+			print("Finished!")
 		
 	def step(self):
-		try:
-			self.step_counter += 1
-			self.pos = self.positions[self.step_counter]
-		except IndexError:
-			pass
+		if self.step_counter == self.chunk_size:
+			self.chunk_nr += 1
+			self.step_counter = 0
+			self.load_chunk()
+
+		self.pos = self.positions[self.step_counter]
+		self.step_counter += 1
 
 	def get_pos(self):
 		return self.pos.copy()
@@ -77,6 +69,8 @@ class Euler:
 		self.g = simulation_parameters["g"]
 		self.mass = simulation_parameters["mass"]
 		self.simulation_noise_std = simulation_parameters["simulation_noise_std"]
+		self.auto_dragging_prob = simulation_parameters["auto_dragging_prob"]
+		self.compression_prob = simulation_parameters["compression_prob"]
 		self.dt = simulation_parameters["dt"]
 		# ======================
 
@@ -85,13 +79,21 @@ class Euler:
 		self.total_forces = np.zeros_like(self.pos)
 		self.all_but_fastened = all_but_fastened
 
+		self.fastened_pos = self.pos[~self.all_but_fastened]
+
 		self.relaxed_distances = self.neighbours(self.pos)
 		self.relaxed_bending = self.neighbours_bending(self.pos)
 
 		self.pos[self.all_but_fastened] += noise[self.all_but_fastened]
 
+	def directions(self, distances):
+		norms = np.linalg.norm(distances, axis=0, keepdims=True)
+		np.clip(norms, 1e-6, 100, out=norms)
+		np.clip(distances, -100, 100, out=distances)
+		return distances/norms
+
 	def structural_spring_force(self):
-		spring_directions = self.distances / (np.linalg.norm(self.distances, axis=0, keepdims=True) + 1e-12)
+		spring_directions = self.directions(self.distances)
 		relaxed_length = np.linalg.norm(self.relaxed_distances, axis = 0, keepdims = True)
 		length = np.linalg.norm(self.distances, axis = 0, keepdims = True)
 
@@ -100,7 +102,7 @@ class Euler:
 		self.total_forces += spring_force_contributions.sum(axis=3)
 
 	def shearing_spring_force(self):
-		spring_directions = self.distances / (np.linalg.norm(self.distances, axis=0, keepdims=True) + 1e-12)
+		spring_directions = self.directions(self.distances)
 		relaxed_length = np.linalg.norm(self.relaxed_distances, axis = 0, keepdims = True)
 		length = np.linalg.norm(self.distances, axis = 0, keepdims = True)
 
@@ -110,7 +112,7 @@ class Euler:
 
 	def bending_spring_force(self):
 		relative_pos = self.neighbours_bending(self.pos)
-		bending_direction = relative_pos / (np.linalg.norm(relative_pos, axis=0, keepdims=True) + 1e-12)
+		bending_direction = self.directions(relative_pos)
 
 		relaxed_bending_magnitude = np.linalg.norm(self.relaxed_bending, axis = 0, keepdims = True)
 		bending = np.linalg.norm(relative_pos, axis = 0, keepdims = True)
@@ -121,7 +123,7 @@ class Euler:
 
 	def dampening_force(self):
 		self.relative_vel = self.neighbours(self.vel)
-		spring_directions = self.distances / (np.linalg.norm(self.distances, axis=0, keepdims=True) + 1e-12)
+		spring_directions = self.directions(self.distances)
 
 		relative_velocities_along_spring = (self.relative_vel * spring_directions).sum(axis = 0, keepdims = True) * spring_directions
 
@@ -146,7 +148,8 @@ class Euler:
 		differences[:, 1:, :-1, 6] = particles[:, 1:, :-1] - particles[:, :-1, 1:] # SW
 		differences[:, :-1, :-1, 7] = particles[:, :-1, :-1] - particles[:, 1:, 1:] # SE
 
-		return differences
+		np.nan_to_num(differences, copy=False, nan=0.1, posinf=100, neginf=-100)
+		return np.clip(differences, -100, 100, out=differences)
 
 	def neighbours_bending(self, particles):
 		differences = np.zeros((*particles.shape, 4))
@@ -157,13 +160,14 @@ class Euler:
 		differences[:, :, 2:, 2] = particles[:, :, 2:] - particles[:, :, :-2] # N
 		differences[:, :, :-2, 3] = particles[:, :, :-2] - particles[:, :, 2:] # S
 
-		return differences
+		np.nan_to_num(differences, copy=False, nan=0.1, posinf=100, neginf=-100)
+		return np.clip(differences, -100, 100, out=differences)
 
 	def move_point(self, particle_idx, pointer):
 		self.pos[:, *particle_idx] = pointer
 		self.vel[:, *particle_idx] = 0
 
-	def step(self):
+	def step(self, allow_manipulation=False):
 		self.total_forces = np.zeros_like(self.pos)
 		self.distances = self.neighbours(self.pos)
 		self.structural_spring_force()
@@ -171,14 +175,39 @@ class Euler:
 		self.bending_spring_force()
 		self.dampening_force()
 		self.gravity_force()
+		np.nan_to_num(self.total_forces, copy=False, nan=0.1, posinf=100, neginf=-100)
+		np.clip(self.total_forces, -100, 100, out=self.total_forces)
 
 		self.acc = self.total_forces/self.mass
 
 		self.vel[self.all_but_fastened] += self.acc[self.all_but_fastened]*self.dt
+		np.nan_to_num(self.vel, copy=False, nan=0.1, posinf=100, neginf=-100)
+		np.clip(self.vel, -100, 100, out=self.vel)
 		self.pos[self.all_but_fastened] += self.vel[self.all_but_fastened]*self.dt
+		np.nan_to_num(self.pos, copy=False, nan=0.1, posinf=100, neginf=-100)
+		np.clip(self.pos, -100, 100, out=self.pos)
 
-		# Add noise:
-		self.pos[self.all_but_fastened] += np.random.normal(0, self.simulation_noise_std, self.pos.shape)[self.all_but_fastened]
+		# Manipulate fabric:
+		if allow_manipulation:
+			self.manipulate()
+
+		# Reset fastened:
+		self.pos[~self.all_but_fastened] = self.fastened_pos
+		self.vel[~self.all_but_fastened] = 0
+
+		if np.any(np.isnan(self.pos)) or np.any(np.isnan(self.vel)) or np.any(np.isnan(self.total_forces)):
+			string = "Nan in"
+
+			if np.any(np.isnan(self.pos)):
+				string += " pos"
+
+			if np.any(np.isnan(self.vel)):
+				string += " vel"
+
+			if np.any(np.isnan(self.total_forces)):
+				string += " forces"
+				
+			raise ValueError(string)
 
 	def get_pos(self):
 		return self.pos.copy()
@@ -189,6 +218,44 @@ class Euler:
 	def get_vel(self):
 		return self.vel.copy()
 
+	# Fabric manipulation:
+	def manipulate(self):
+		if self.simulation_noise_std:
+			"""
+			Noise is added to the output position of each step
+			"""
+			self.pos[self.all_but_fastened] += np.clip(np.random.normal(
+							0,
+							self.simulation_noise_std,
+							self.pos.shape
+							)[self.all_but_fastened], -1, 1)
+			self.vel[self.all_but_fastened] += np.clip(np.random.normal(
+							0,
+							self.simulation_noise_std,
+							self.vel.shape
+							)[self.all_but_fastened], -1, 1)
+		
+		if self.auto_dragging_prob:
+			"""
+			Points are dragged away randomly
+			"""
+			r = np.random.random()
+			if r < self.auto_dragging_prob:
+				x, y = np.random.randint(0, min(self.pos[0, :, :].shape), size=2)
+				self.pos[:, x, y] += np.random.uniform(-10, 10, 3)
+				self.vel[:, x, y] = 0
+		
+		if self.compression_prob:
+			"""
+			Fabric is compressed into ball and then relaxed
+			"""
+			r = np.random.random()
+			if r < self.compression_prob:
+				center_of_compression = np.zeros((3, 1, 1))
+				center_of_compression[0] = self.pos.shape[1]/2
+				center_of_compression[1] = self.pos.shape[2]
+				self.pos = center_of_compression + 0.2*(self.pos - center_of_compression)
+				self.vel[:] = 0
 
 class MachineLearning:
 	def __init__(self, pos, noise, all_but_fastened):
@@ -199,13 +266,18 @@ class MachineLearning:
 
 		self.mass = simulation_parameters["mass"]
 		self.dt = simulation_parameters["dt"]
+		self.max_vel = simulation_parameters["max_vel"]
 
 		# Model:
 		with open("config/model.json") as f:
 			model_parameters = json.load(f)
 
-		network = model_parameters["network"]
-		network_args = model_parameters["network_args"]
+		input_channels = model_parameters["input_channels"]
+		output_channels = model_parameters["output_channels"]
+		hidden_channels = model_parameters["hidden_channels"]
+		dilations = model_parameters["dilations"]
+		padding_mode = model_parameters["padding_mode"]
+		use_residual_blocks = model_parameters["use_residual_blocks"]
 
 		# Settings:
 		with open("config/settings.json") as f:
@@ -215,21 +287,26 @@ class MachineLearning:
 		compile_model = settings["compile_model"]
 		# ======================	
 
-		# Architectures:
-		self.architecture = {
-		    "CNN": my_models.CNN
-		    }
-
 		# Build model:
 		self.device = "cuda" if torch.cuda.is_available() else "cpu"
 		print("Device: " f"{self.device}")
 
-		self.model = self.architecture[network](*network_args).to(self.device)
-		state = torch.load(model_path, map_location=torch.device(self.device), weights_only=True)
+		self.model = my_models.CNN(
+			input_channels,
+	        output_channels,
+	        hidden_channels=hidden_channels,
+	        use_residual_blocks=use_residual_blocks,
+	        dilations=dilations,
+	        padding_mode=padding_mode
+			).to(self.device)
+		state = torch.load(model_path + "model.pth", map_location=torch.device(self.device), weights_only=True)
 		self.model.load_state_dict(state)
 		self.model.eval()
 		if compile_model:
 			self.model = torch.compile(self.model)
+
+		# Parameter count:
+		print("Trainable parameters: ", sum(p.numel() for p in self.model.parameters() if p.requires_grad))
 
 		self.pos = torch.tensor(pos, dtype=torch.float32, device=self.device)
 		self.vel = torch.zeros_like(self.pos)
@@ -247,16 +324,18 @@ class MachineLearning:
 	def move_point(self, particle_idx, pointer):
 		if not isinstance(self.pos, np.ndarray):
 			pointer = torch.tensor(pointer, dtype=torch.float32, device=self.device)
-		self.pos[:, *particle_idx] = pointer	
+		self.pos[:, *particle_idx] = pointer
+		self.vel[:, *particle_idx] = 0
 
 	def step(self):
 		with torch.no_grad():
-			self.total_forces = my_models.run(self.model, torch.cat((self.pos, self.vel), axis=0), self.device)
+			self.total_forces = my_models.run(self.model, torch.cat((self.pos, self.vel), axis=0).unsqueeze(0), self.device)
+			self.total_forces = self.total_forces.squeeze(0)
 			self.total_forces *= self.force_scale
-			# self.total_forces = torch.clamp(self.total_forces, -self.force_scale, self.force_scale)
 
 		self.acc = self.total_forces/self.mass
 		self.vel[self.all_but_fastened] += self.acc[self.all_but_fastened]*self.dt
+		self.vel.clamp_(-self.max_vel, self.max_vel)
 		self.pos[self.all_but_fastened] += self.vel[self.all_but_fastened]*self.dt
 
 	def get_pos(self):
